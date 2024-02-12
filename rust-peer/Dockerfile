@@ -1,8 +1,8 @@
 FROM rust:latest
 
-RUN --mount=type=cache,target=/var/cache/apt apt-get update && apt-get install -y protobuf-compiler
+RUN --mount=type=cache,target=/var/cache/apt apt-get install -y protobuf-compiler
 
-WORKDIR /usr/src/my_rust_app
+WORKDIR /usr/src/rust-libp2p-webrtc-peer
 COPY . .
 
 RUN --mount=type=cache,target=./target \
@@ -12,5 +12,5 @@ RUN --mount=type=cache,target=./target \
 ENV RUST_BACKTRACE=1
 EXPOSE 9090
 
-CMD ["./target/release/my_rust_app"]
+CMD ["./target/release/rust-libp2p-webrtc-peer"]
 
