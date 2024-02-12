@@ -9,8 +9,8 @@ RUN --mount=type=cache,target=./target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release
 
-CMD ["./target/release/my_rust_app"]
 ENV RUST_BACKTRACE=1
-
 EXPOSE 9090
-CMD ["rust-libp2p-webrtc-peer"]
+
+CMD ["./target/release/my_rust_app"]
+
