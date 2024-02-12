@@ -2,7 +2,7 @@
 FROM rust:1.76.0 as builder
 
 RUN rustup target add x86_64-unknown-linux-musl
-RUN --mount=type=cache,target=/var/cache/apt apt-get update && apt-get install -y musl-dev musl-tools
+RUN --mount=type=cache,target=/var/cache/apt apt-get update && apt-get install -y musl-dev musl-tools protobuf-compiler
 
 # Run with access to the target cache to speed up builds
 WORKDIR /workspace
