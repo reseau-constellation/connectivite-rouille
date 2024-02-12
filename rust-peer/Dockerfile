@@ -22,5 +22,4 @@ RUN --mount=type=cache,target=/var/cache/apk apk add bind-tools
 ENV RUST_BACKTRACE=1
 
 EXPOSE 9090
-
 CMD ["rust-libp2p-webrtc-peer"]
