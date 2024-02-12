@@ -7,7 +7,7 @@ COPY . .
 
 RUN --mount=type=cache,target=./target \
     --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo build --release
+    cargo build --release  --jobs 1
 
 ENV RUST_BACKTRACE=1
 EXPOSE 9090
