@@ -5,7 +5,9 @@ RUN --mount=type=cache,target=/var/cache/apt apt-get update && apt-get install -
 WORKDIR /usr/src/my_rust_app
 COPY . .
 
-RUN cargo build --release
+RUN --mount=type=cache,target=./target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release
 
 CMD ["./target/release/my_rust_app"]
 ENV RUST_BACKTRACE=1
