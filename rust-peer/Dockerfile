@@ -2,7 +2,7 @@ FROM rust:latest
 
 RUN --mount=type=cache,target=/var/cache/apt apt-get install -y protobuf-compiler
 
-WORKDIR /usr/src/rust-libp2p-webrtc-peer
+WORKDIR /usr/src/mon-appli
 COPY . .
 
 RUN --mount=type=cache,target=./target \
