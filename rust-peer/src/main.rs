@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to read certificate")?;
 
-    let mut swarm = create_swarm(local_key, webrtc_cert, &opt)?;
+    let mut swarm = create_swarm(local_key.clone(), webrtc_cert, &opt)?;
 
     let address_webrtc = Multiaddr::from(opt.listen_address)
         .with(Protocol::Udp(PORT_WEBRTC))
@@ -292,18 +292,18 @@ async fn main() -> Result<()> {
                     debug!("Failed to run Kademlia bootstrap: {e:?}");
                 }
 
-//                 let peer = Peer {
-//                     public_key: local_key.public().to_vec(),
-//                     addrs: swarm.external_addresses().map(|a| a.to_vec()).collect(),
-//                 };
-//                 let mut buf = Vec::new();
-//                 peer.encode(&mut buf)?;
-//                 if let Err(err) = swarm.behaviour_mut().gossipsub.publish(
-//                     gossipsub::IdentTopic::new(GOSSIPSUB_PEER_DISCOVERY),
-//                     &buf,
-//                 ) {
-//                     error!("Failed to publish peer: {err}")
-//                 }
+                let peer = Peer {
+                    public_key: local_key.clone().public().encode_protobuf(),
+                    addrs: swarm.external_addresses().map(|a| a.to_vec()).collect(),
+                };
+                let mut buf = Vec::new();
+                peer.encode(&mut buf)?;
+                if let Err(err) = swarm.behaviour_mut().gossipsub.publish(
+                    gossipsub::IdentTopic::new(GOSSIPSUB_PEER_DISCOVERY),
+                    &*buf,
+                ) {
+                    error!("Failed to publish peer: {err}")
+                }
             }
         }
     }
