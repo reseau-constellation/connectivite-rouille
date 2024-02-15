@@ -7,6 +7,7 @@ use futures::StreamExt;
 use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::{
     core::muxing::StreamMuxerBox,
+    core::upgrade,
     ping,
     dcutr,
     dns, gossipsub, identify, identity,
@@ -14,7 +15,8 @@ use libp2p::{
     kad::{Kademlia, KademliaConfig},
     memory_connection_limits,
     multiaddr::{Multiaddr, Protocol},
-    quic, relay,
+    quic, relay, tcp,
+    yamux, noise,
     swarm::{NetworkBehaviour, Swarm, SwarmBuilder, SwarmEvent},
     PeerId, StreamProtocol, Transport,
 };
@@ -43,10 +45,11 @@ const FILE_EXCHANGE_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/universal-connectivity-file/1");
 const PORT_WEBRTC: u16 = 9090;
 const PORT_QUIC: u16 = 9091;
+const PORT_TCP: u16 = 9092;
 const LOCAL_KEY_PATH: &str = "./local_key";
 const LOCAL_CERT_PATH: &str = "./cert.pem";
 const GOSSIPSUB_CHAT_TOPIC: &str = "/dContact/1/message/proto";
-const GOSSIPSUB_PEER_DISCOVERY: &str = "dcontact._peer-discovery._p2p._pubsub";
+const GOSSIPSUB_PEER_DISCOVERY: &str = "constellation._peer-discovery._p2p._pubsub";
 
 #[derive(Debug, Parser)]
 #[clap(name = "universal connectivity rust peer")]
@@ -63,7 +66,7 @@ struct Opt {
     connect: Vec<Multiaddr>,
 
     /// Gossipsub peer discovery topic.
-    #[clap(long, default_value = "dcontact._peer-discovery._p2p._pubsub")]
+    #[clap(long, default_value = "constellation._peer-discovery._p2p._pubsub")]
     gossipsub_peer_discovery: String,
 }
 
@@ -90,12 +93,18 @@ async fn main() -> Result<()> {
         .with(Protocol::Udp(PORT_QUIC))
         .with(Protocol::QuicV1);
 
+    let address_tcp = Multiaddr::from(opt.listen_address)
+        .with(Protocol::Tcp(PORT_TCP));
+
     swarm
         .listen_on(address_webrtc.clone())
         .expect("listen on webrtc");
     swarm
         .listen_on(address_quic.clone())
         .expect("listen on quic");
+    swarm
+        .listen_on(address_tcp.clone())
+        .expect("listen on tcp");
 
     for addr in opt.connect {
         if let Err(e) = swarm.dial(addr.clone()) {
@@ -108,7 +117,6 @@ async fn main() -> Result<()> {
 
     let mut tick = futures_timer::Delay::new(TICK_INTERVAL);
 
-    let now = Instant::now();
     loop {
         match select(swarm.next(), &mut tick).await {
             Either::Left((event, _)) => match event.unwrap() {
@@ -284,10 +292,6 @@ async fn main() -> Result<()> {
                     debug!("Failed to run Kademlia bootstrap: {e:?}");
                 }
 
-//                 let message = format!(
-//                     "Hello world! Sent from the rust-peer at: {:4}s",
-//                     now.elapsed().as_secs_f64()
-//                 );
 //                 let peer = Peer {
 //                     public_key: local_key.public().to_vec(),
 //                     addrs: swarm.external_addresses().map(|a| a.to_vec()).collect(),
@@ -358,9 +362,26 @@ fn create_swarm(
         let webrtc = webrtc::tokio::Transport::new(local_key.clone(), certificate);
         let quic = quic::tokio::Transport::new(quic::Config::new(&local_key));
 
-        let mapped = webrtc.or_transport(quic).map(|fut, _| match fut {
-            Either::Right((local_peer_id, conn)) => (local_peer_id, StreamMuxerBox::new(conn)),
+        // https://github.com/DougAnderson444/libp2peasy/blob/f534efb499c5b63e07d1b63e2191e9965a1e97d2/src/transport.rs#L52
+        let authentication_config = noise::Config::new(&local_key).unwrap();
+
+        let mut yamux_config = yamux::Config::default();
+        // Enable proper flow-control: window updates are only sent when
+        // buffered data has been consumed.
+        yamux_config.set_window_update_mode(yamux::WindowUpdateMode::on_read());
+        let tcp = tcp::tokio::Transport::new(tcp::Config::new().port_reuse(true).nodelay(true))
+            .upgrade(upgrade::Version::V1)
+            .authenticate(authentication_config)
+            .multiplex(yamux_config)
+            .timeout(Duration::from_secs(20));
+
+        let quic_or_tcp = libp2p::core::transport::OrTransport::new(quic, tcp);
+        let mapped = webrtc.or_transport(quic_or_tcp).map(|fut, _| match fut {
             Either::Left((local_peer_id, conn)) => (local_peer_id, StreamMuxerBox::new(conn)),
+            Either::Right(quic_or_tcp) => match quic_or_tcp {
+                Either::Left((peer_id, muxer)) => (peer_id, StreamMuxerBox::new(muxer)),
+                Either::Right((peer_id, muxer)) => (peer_id, StreamMuxerBox::new(muxer)),
+            },
         });
 
         dns::TokioDnsConfig::system(mapped)?.boxed()
