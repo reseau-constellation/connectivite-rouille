@@ -31,7 +31,7 @@ use std::path::Path;
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    time::{Duration, Instant},
+    time::{Duration},
 };
 use tokio::fs;
 
