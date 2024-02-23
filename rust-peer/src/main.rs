@@ -10,6 +10,7 @@ use libp2p::{
     gossipsub, identify, identity,
     kad::store::MemoryStore,
     kad,
+    mdns,
     memory_connection_limits,
     multiaddr::{Multiaddr, Protocol},
     relay, tcp,
@@ -299,6 +300,7 @@ struct Behaviour {
     identify: identify::Behaviour,
     kademlia: kad::Behaviour<MemoryStore>,
     relay: relay::Behaviour,
+    mdns: mdns::tokio::Behaviour,
     connection_limits: memory_connection_limits::Behaviour,
 }
 
@@ -353,6 +355,7 @@ fn create_swarm(
         gossipsub,
         identify: identify_config,
         kademlia: kad_behaviour,
+        mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), local_key.public().to_peer_id())?,
         relay: relay::Behaviour::new(
             local_peer_id,
             relay::Config {
