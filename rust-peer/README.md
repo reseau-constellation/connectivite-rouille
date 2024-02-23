@@ -1,6 +1,6 @@
 # Gestion sur DigitalOcean
 
-## Configuration de la goutelette
+## Configuration de la gouttelette
 
 
 ### Ajout d'espace de mémoire vive
@@ -21,7 +21,7 @@ cargo run
 
 ### Mise à jour client
 ```sh
-cd connectivit-rouille
+cd connectivite-rouille
 git pull
 ```
 
@@ -84,3 +84,6 @@ sudo supervisorctl
 > tail relai stdout
 > tail relai stderr
 ```
+
+
+[![DigitalOcean Referral Badge](https://web-platforms.sfo2.cdn.digitaloceanspaces.com/WWW/Badge%201.svg)](https://www.digitalocean.com/?refcode=979405af974a&utm_campaign=Referral_Invite&utm_medium=Referral_Program&utm_source=badge)

@@ -1,31 +1,27 @@
-mod protocol;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use futures::future::{select, Either};
 use futures::StreamExt;
-use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::{
     core::muxing::StreamMuxerBox,
-    core::upgrade,
     ping,
     dcutr,
-    dns, gossipsub, identify, identity,
-    kad::record::store::MemoryStore,
-    kad::{Kademlia, KademliaConfig},
+    gossipsub, identify, identity,
+    kad::store::MemoryStore,
+    kad,
     memory_connection_limits,
     multiaddr::{Multiaddr, Protocol},
-    quic, relay, tcp,
+    relay, tcp,
     yamux, noise,
-    swarm::{NetworkBehaviour, Swarm, SwarmBuilder, SwarmEvent},
+    swarm::{NetworkBehaviour, Swarm, SwarmEvent},
+    SwarmBuilder,
     PeerId, StreamProtocol, Transport,
 };
 use libp2p_webrtc as webrtc;
 use libp2p_webrtc::tokio::Certificate;
 use log::{debug, error, info, warn};
-use protocol::FileExchangeCodec;
 use prost::Message;
-use std::iter;
 use std::net::IpAddr;
 use std::path::Path;
 use std::{
@@ -34,21 +30,18 @@ use std::{
     time::{Duration},
 };
 use tokio::fs;
+use rand::Rng;
 
-//include!(concat!(env!("OUT_DIR"), "/peer.rs"));
-include!(concat!(env!("OUT_DIR"), "/decontact.rs"));
+include!(concat!(env!("OUT_DIR"), "/peer.rs"));
 
 const TICK_INTERVAL: Duration = Duration::from_secs(15);
 const KADEMLIA_PROTOCOL_NAME: StreamProtocol =
     StreamProtocol::new("/universal-connectivity/lan/kad/1.0.0");
-const FILE_EXCHANGE_PROTOCOL: StreamProtocol =
-    StreamProtocol::new("/universal-connectivity-file/1");
 const PORT_WEBRTC: u16 = 9090;
 const PORT_QUIC: u16 = 9091;
 const PORT_TCP: u16 = 9092;
 const LOCAL_KEY_PATH: &str = "./local_key";
 const LOCAL_CERT_PATH: &str = "./cert.pem";
-const GOSSIPSUB_CHAT_TOPIC: &str = "/dContact/1/message/proto";
 const GOSSIPSUB_PEER_DISCOVERY: &str = "constellation._peer-discovery._p2p._pubsub";
 
 #[derive(Debug, Parser)]
@@ -73,6 +66,7 @@ struct Opt {
 /// An example WebRTC peer that will accept connections
 #[tokio::main]
 async fn main() -> Result<()> {
+    let mut rng = rand::thread_rng();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let opt = Opt::parse();
@@ -112,7 +106,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    let chat_topic_hash = gossipsub::IdentTopic::new(GOSSIPSUB_CHAT_TOPIC).hash();
     let peer_discovery = gossipsub::IdentTopic::new(GOSSIPSUB_PEER_DISCOVERY).hash();
 
     let mut tick = futures_timer::Delay::new(TICK_INTERVAL);
@@ -134,6 +127,20 @@ async fn main() -> Result<()> {
                 }
                 SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                     info!("Connected to {peer_id}");
+                    let peer = Peer {
+                        public_key: local_key.clone().public().encode_protobuf(),
+                        addrs: swarm.external_addresses().map(|a| a.to_vec()).collect(),
+                        rand: rng.gen::<i32>(),
+                    };
+                    let mut buf = Vec::new();
+                    peer.encode(&mut buf)?;
+                    if let Err(err) = swarm.behaviour_mut().gossipsub.publish(
+                        gossipsub::IdentTopic::new(GOSSIPSUB_PEER_DISCOVERY),
+                        &*buf,
+                    ) {
+                        error!("Failed to publish peer: {err}")
+                    }
+                    info!("Gossipsub publié à {peer_id}")
                 }
                 SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                     warn!("Failed to dial {peer_id:?}: {error}");
@@ -150,7 +157,7 @@ async fn main() -> Result<()> {
                     debug!("{:?}", e);
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Dcutr(e)) => {
-                    info!("Connected to {:?}", e);
+                    info!("Connected to (through DCUTR) {:?}", e);
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(
                     libp2p::gossipsub::Event::Message {
@@ -159,25 +166,26 @@ async fn main() -> Result<()> {
                         message,
                     },
                 )) => {
-                    if message.topic == chat_topic_hash {
-                        info!(
-                            "Received message from {:?}: {}",
-                            message.source,
-                            String::from_utf8(message.data).unwrap()
-                        );
-                        continue;
-                    }
 
                     if message.topic == peer_discovery {
                         let peer = Peer::decode(&*message.data).unwrap();
                         //info!("Received peer from {:?}", peer.addrs);
+                        let rand_num = rng.gen::<i32>();
+                        let peer = Peer {
+                            public_key: peer.public_key,
+                            addrs: peer.addrs,
+                            rand: rand_num,
+                        };
                         for addr in &peer.addrs {
                             if let Ok(multiaddr) = Multiaddr::try_from(addr.clone()) {
                                 info!("Received address: {:?}", multiaddr.to_string());
+                                
+                                let mut buf = Vec::new();
+                                peer.encode(&mut buf)?;
 
                                 if let Err(err) = swarm.behaviour_mut().gossipsub.publish(
                                                          gossipsub::IdentTopic::new(GOSSIPSUB_PEER_DISCOVERY),
-                                                         &*message.data,)
+                                                         &*buf,)
                                 {error!("Failed to publish peer: {err}")}
                             } else {
                                 error!("Failed to parse multiaddress");
@@ -248,34 +256,6 @@ async fn main() -> Result<()> {
                 SwarmEvent::Behaviour(BehaviourEvent::Kademlia(e)) => {
                     debug!("Kademlia event: {:?}", e);
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
-                    request_response::Event::Message { message, .. },
-                )) => match message {
-                    request_response::Message::Request { request, .. } => {
-                        //TODO: support ProtocolSupport::Full
-                        debug!(
-                            "umimplemented: request_response::Message::Request: {:?}",
-                            request
-                        );
-                    }
-                    request_response::Message::Response { response, .. } => {
-                        info!(
-                            "request_response::Message::Response: size:{}",
-                            response.file_body.len()
-                        );
-                        // TODO: store this file (in memory or disk) and provider it via Kademlia
-                    }
-                },
-                SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
-                    request_response::Event::OutboundFailure {
-                        request_id, error, ..
-                    },
-                )) => {
-                    error!(
-                        "request_response::Event::OutboundFailure for request {:?}: {:?}",
-                        request_id, error
-                    );
-                }
                 event => {
                     debug!("Other type of event: {:?}", event);
                 }
@@ -295,6 +275,7 @@ async fn main() -> Result<()> {
                 let peer = Peer {
                     public_key: local_key.clone().public().encode_protobuf(),
                     addrs: swarm.external_addresses().map(|a| a.to_vec()).collect(),
+                    rand: rng.gen::<i32>(),
                 };
                 let mut buf = Vec::new();
                 peer.encode(&mut buf)?;
@@ -316,9 +297,8 @@ struct Behaviour {
     dcutr: dcutr::Behaviour,
     gossipsub: gossipsub::Behaviour,
     identify: identify::Behaviour,
-    kademlia: Kademlia<MemoryStore>,
+    kademlia: kad::Behaviour<MemoryStore>,
     relay: relay::Behaviour,
-    request_response: request_response::Behaviour<FileExchangeCodec>,
     connection_limits: memory_connection_limits::Behaviour,
 }
 
@@ -355,37 +335,7 @@ fn create_swarm(
     .expect("Correct configuration");
 
     // Create/subscribe Gossipsub topics
-    gossipsub.subscribe(&gossipsub::IdentTopic::new(GOSSIPSUB_CHAT_TOPIC))?;
     gossipsub.subscribe(&gossipsub::IdentTopic::new(&opt.gossipsub_peer_discovery))?;
-
-    let transport = {
-        let webrtc = webrtc::tokio::Transport::new(local_key.clone(), certificate);
-        let quic = quic::tokio::Transport::new(quic::Config::new(&local_key));
-
-        // https://github.com/DougAnderson444/libp2peasy/blob/f534efb499c5b63e07d1b63e2191e9965a1e97d2/src/transport.rs#L52
-        let authentication_config = noise::Config::new(&local_key).unwrap();
-
-        let mut yamux_config = yamux::Config::default();
-        // Enable proper flow-control: window updates are only sent when
-        // buffered data has been consumed.
-        yamux_config.set_window_update_mode(yamux::WindowUpdateMode::on_read());
-        let tcp = tcp::tokio::Transport::new(tcp::Config::new().port_reuse(true).nodelay(true))
-            .upgrade(upgrade::Version::V1)
-            .authenticate(authentication_config)
-            .multiplex(yamux_config)
-            .timeout(Duration::from_secs(20));
-
-        let quic_or_tcp = libp2p::core::transport::OrTransport::new(quic, tcp);
-        let mapped = webrtc.or_transport(quic_or_tcp).map(|fut, _| match fut {
-            Either::Left((local_peer_id, conn)) => (local_peer_id, StreamMuxerBox::new(conn)),
-            Either::Right(quic_or_tcp) => match quic_or_tcp {
-                Either::Left((peer_id, muxer)) => (peer_id, StreamMuxerBox::new(muxer)),
-                Either::Right((peer_id, muxer)) => (peer_id, StreamMuxerBox::new(muxer)),
-            },
-        });
-
-        dns::TokioDnsConfig::system(mapped)?.boxed()
-    };
 
     let identify_config = identify::Behaviour::new(
         identify::Config::new("/ipfs/0.1.0".into(), local_key.public())
@@ -393,10 +343,10 @@ fn create_swarm(
     );
 
     // Create a Kademlia behaviour.
-    let mut cfg = KademliaConfig::default();
+    let mut cfg = kad::Config::default();
     cfg.set_protocol_names(vec![KADEMLIA_PROTOCOL_NAME]);
     let store = MemoryStore::new(local_peer_id);
-    let kad_behaviour = Kademlia::with_config(local_peer_id, store, cfg);
+    let kad_behaviour = kad::Behaviour::with_config(local_peer_id, store, cfg);
     let behaviour = Behaviour {
         ping: ping::Behaviour::new(ping::Config::new()),
         dcutr: dcutr::Behaviour::new(local_key.public().to_peer_id()),
@@ -415,16 +365,32 @@ fn create_swarm(
                 ..Default::default()
             },
         ),
-        request_response: request_response::Behaviour::new(
-            // TODO: support ProtocolSupport::Full
-            iter::once((FILE_EXCHANGE_PROTOCOL, ProtocolSupport::Outbound)),
-            Default::default(),
-        ),
         connection_limits: memory_connection_limits::Behaviour::with_max_percentage(0.9),
     };
     Ok(
-        SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id)
-            .idle_connection_timeout(Duration::from_secs(60))
+        SwarmBuilder::with_existing_identity(local_key)
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default().port_reuse(true).nodelay(true),
+                noise::Config::new,
+                yamux::Config::default,
+            )?
+            // let quic = quic::tokio::Transport::new(quic::Config::new(&local_key));
+            .with_quic()
+            .with_other_transport(|local_key| {
+                Ok(webrtc::tokio::Transport::new(
+                    local_key.clone(),
+                    certificate,
+                )
+                .map(|(peer_id, conn), _| (peer_id, StreamMuxerBox::new(conn))))
+            })?
+            .with_dns()?
+            .with_behaviour(|_| {
+                Ok(behaviour)
+            })?
+            .with_swarm_config(|cfg| {
+                cfg.with_idle_connection_timeout(Duration::from_secs(60))
+            })
             .build(),
     )
 }

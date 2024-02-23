@@ -1,4 +1,4 @@
-include!(concat!(env!("OUT_DIR"), "/decontact.rs"));
+include!(concat!(env!("OUT_DIR"), "/peer.rs"));
 
 fn main() {
         let out_dir = std::env::var("OUT_DIR").unwrap_or("Default Value".to_string());
