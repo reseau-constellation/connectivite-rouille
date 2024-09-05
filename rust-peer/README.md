@@ -62,7 +62,7 @@ sudo nano ~/relai.sh
 ```sh
 #!/bin/bash
 cd /root/connectivite-rouille/rust-peer
-/root/.cargo/bin/cargo run
+timeout 120 /root/.cargo/bin/cargo run
 ```
 chmod +x ~/relai.sh
 sudo nano /etc/supervisor/conf.d/relai.conf

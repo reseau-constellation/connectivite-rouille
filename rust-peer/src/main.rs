@@ -28,7 +28,7 @@ use std::path::Path;
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    time::{Duration},
+    time::Duration,
 };
 use tokio::fs;
 use rand::Rng;
@@ -44,9 +44,18 @@ const PORT_TCP: u16 = 9092;
 const LOCAL_KEY_PATH: &str = "./local_key";
 const LOCAL_CERT_PATH: &str = "./cert.pem";
 const GOSSIPSUB_PEER_DISCOVERY: &str = "constellation._peer-discovery._p2p._pubsub";
+const BOOTSTRAP_NODES: [&str; 4] = [
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+];
+
+
 
 #[derive(Debug, Parser)]
 #[clap(name = "universal connectivity rust peer")]
+
 struct Opt {
     /// Address to listen on.
     #[clap(long, default_value = "0.0.0.0")]
@@ -107,6 +116,13 @@ async fn main() -> Result<()> {
         }
     }
 
+    for peer in &BOOTSTRAP_NODES {
+        let multiaddr: Multiaddr = peer.parse().expect("Failed to parse Multiaddr");
+        if let Err(e) = swarm.dial(multiaddr) {
+            debug!("Failed to dial {peer}: {e}");
+        }
+    }
+
     let peer_discovery = gossipsub::IdentTopic::new(GOSSIPSUB_PEER_DISCOVERY).hash();
 
     let mut tick = futures_timer::Delay::new(TICK_INTERVAL);
@@ -128,20 +144,6 @@ async fn main() -> Result<()> {
                 }
                 SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                     info!("Connected to {peer_id}");
-                    let peer = Peer {
-                        public_key: local_key.clone().public().encode_protobuf(),
-                        addrs: swarm.external_addresses().map(|a| a.to_vec()).collect(),
-                        rand: rng.gen::<i32>(),
-                    };
-                    let mut buf = Vec::new();
-                    peer.encode(&mut buf)?;
-                    if let Err(err) = swarm.behaviour_mut().gossipsub.publish(
-                        gossipsub::IdentTopic::new(GOSSIPSUB_PEER_DISCOVERY),
-                        &*buf,
-                    ) {
-                        error!("Failed to publish peer: {err}")
-                    }
-                    info!("Gossipsub publié à {peer_id}")
                 }
                 SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                     warn!("Failed to dial {peer_id:?}: {error}");
@@ -170,24 +172,24 @@ async fn main() -> Result<()> {
 
                     if message.topic == peer_discovery {
                         let peer = Peer::decode(&*message.data).unwrap();
-                        //info!("Received peer from {:?}", peer.addrs);
+                        // info!("Received peer from {:?}", peer.addrs);
                         let rand_num = rng.gen::<i32>();
                         let peer = Peer {
                             public_key: peer.public_key,
                             addrs: peer.addrs,
-                            rand: rand_num,
+                            rand: Some(rand_num),
                         };
+                        let mut buf = Vec::new();
+                                peer.encode(&mut buf)?;
+
+                        if let Err(err) = swarm.behaviour_mut().gossipsub.publish(
+                                                    gossipsub::IdentTopic::new(GOSSIPSUB_PEER_DISCOVERY),
+                                                    &*buf,)
+                        {error!("190 Failed to publish peer: {err}")}
+
                         for addr in &peer.addrs {
                             if let Ok(multiaddr) = Multiaddr::try_from(addr.clone()) {
                                 info!("Received address: {:?}", multiaddr.to_string());
-                                
-                                let mut buf = Vec::new();
-                                peer.encode(&mut buf)?;
-
-                                if let Err(err) = swarm.behaviour_mut().gossipsub.publish(
-                                                         gossipsub::IdentTopic::new(GOSSIPSUB_PEER_DISCOVERY),
-                                                         &*buf,)
-                                {error!("Failed to publish peer: {err}")}
                             } else {
                                 error!("Failed to parse multiaddress");
                             }
@@ -206,7 +208,7 @@ async fn main() -> Result<()> {
                 SwarmEvent::Behaviour(BehaviourEvent::Identify(e)) => {
                     info!("BehaviourEvent::Identify {:?}", e);
 
-                    if let identify::Event::Error { peer_id, error } = e {
+                    if let identify::Event::Error { peer_id, error, connection_id: _ } = e {
                         match error {
                             libp2p::swarm::StreamUpgradeError::Timeout => {
                                 // When a browser tab closes, we don't get a swarm event
@@ -221,6 +223,7 @@ async fn main() -> Result<()> {
                         }
                     } else if let identify::Event::Received {
                         peer_id,
+                        connection_id: _,
                         info:
                             identify::Info {
                                 listen_addrs,
@@ -276,7 +279,7 @@ async fn main() -> Result<()> {
                 let peer = Peer {
                     public_key: local_key.clone().public().encode_protobuf(),
                     addrs: swarm.external_addresses().map(|a| a.to_vec()).collect(),
-                    rand: rng.gen::<i32>(),
+                    rand: Some(rng.gen::<i32>()),
                 };
                 let mut buf = Vec::new();
                 peer.encode(&mut buf)?;
@@ -284,7 +287,7 @@ async fn main() -> Result<()> {
                     gossipsub::IdentTopic::new(GOSSIPSUB_PEER_DISCOVERY),
                     &*buf,
                 ) {
-                    error!("Failed to publish peer: {err}")
+                    error!("287 Failed to publish peer: {err}")
                 }
             }
         }
@@ -345,8 +348,7 @@ fn create_swarm(
     );
 
     // Create a Kademlia behaviour.
-    let mut cfg = kad::Config::default();
-    cfg.set_protocol_names(vec![KADEMLIA_PROTOCOL_NAME]);
+    let cfg = kad::Config::new(KADEMLIA_PROTOCOL_NAME);
     let store = MemoryStore::new(local_peer_id);
     let kad_behaviour = kad::Behaviour::with_config(local_peer_id, store, cfg);
     let behaviour = Behaviour {
@@ -370,11 +372,12 @@ fn create_swarm(
         ),
         connection_limits: memory_connection_limits::Behaviour::with_max_percentage(0.9),
     };
+
     Ok(
         SwarmBuilder::with_existing_identity(local_key)
             .with_tokio()
             .with_tcp(
-                tcp::Config::default().port_reuse(true).nodelay(true),
+                tcp::Config::default().nodelay(true),
                 noise::Config::new,
                 yamux::Config::default,
             )?

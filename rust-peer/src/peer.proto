@@ -5,5 +5,5 @@ package peer;
 message Peer {
     bytes publicKey = 1;
     repeated bytes addrs = 2;
-    int32 rand = 3;
+    optional int32 rand = 3;
 }
